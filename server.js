@@ -7,7 +7,13 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-app.use(express.static('public'));
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Add this route to handle all requests and serve index.html
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 const MAX_WICKETS = 10;
 const MAX_BALLS = 30;
@@ -17,8 +23,11 @@ let games = {};
 let tournamentLobbies = {};
 let activeTournaments = {};
 
-// Debug logging
-const DEBUG = true;
+// Use environment variable for port, fallback to 3000 for local development
+const PORT = process.env.PORT || 3000;
+
+// Debug logging - disable in production
+const DEBUG = process.env.NODE_ENV !== 'production';
 function debugLog(message, data = null) {
     if (DEBUG) {
         console.log(`[DEBUG] ${message}`, data || '');
@@ -736,7 +745,11 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = 3000;
-server.listen(PORT, () => {
-    console.log(`🚀 Server running! Open http://localhost:${PORT} in your browser.`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT}!`);
+    if (process.env.NODE_ENV === 'production') {
+        console.log('🌐 Production mode');
+    } else {
+        console.log('💻 Development mode');
+    }
 });
