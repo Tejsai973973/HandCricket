@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Cricket 🏏</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <h1>Hand Cricket 🏏</h1>
+
+    <!-- Welcome Screen -->
+    <div id="welcome-screen">
+        <h2>Welcome to Hand Cricket!</h2>
+        <p>Experience the thrill of cricket in this exciting number-based game!</p>
+        <div class="welcome-buttons">
+            <button onclick="showRules()">How to Play</button>
+            <button onclick="showUsernameScreen()">Let's Begin!</button>
+        </div>
+    </div>
+
+    <!-- Rules Screen -->
+    <div id="rules-screen" class="hidden">
+        <h2>How to Play Hand Cricket</h2>
+        
+        <div class="rules-content">
+            <h3>🎯 Game Basics:</h3>
+            <ul>
+                <li>Two players take turns choosing numbers from 1 to 6</li>
+                <li>If both choose the same number, the batsman is OUT!</li>
+                <li>If numbers are different, batsman scores those runs</li>
+            </ul>
+
+            <h3>🏏 Batting & Bowling:</h3>
+            <ul>
+                <li><strong>Batsman:</strong> Tries to score runs by choosing numbers</li>
+                <li><strong>Bowler:</strong> Tries to get the batsman out by matching numbers</li>
+                <li>Each team gets 10 wickets and 30 balls (5 overs)</li>
+            </ul>
+
+            <h3>🎲 Toss & Innings:</h3>
+            <ul>
+                <li>Toss winner chooses to Bat or Bowl first</li>
+                <li>First innings: Set a target score</li>
+                <li>Second innings: Chase the target</li>
+            </ul>
+
+            <h3>🏆 Winning:</h3>
+            <ul>
+                <li>Team that scores more runs wins</li>
+                <li>If chasing team reaches target, they win</li>
+                <li>If all wickets fall or balls finish, innings ends</li>
+            </ul>
+
+            <h3>🎮 Game Modes:</h3>
+            <ul>
+                <li><strong>Player vs AI:</strong> Play against computer with 3 difficulty levels</li>
+                <li><strong>1 vs 1 Online:</strong> Play with a friend using Room ID</li>
+                <li><strong>Tournament:</strong> Compete in 4, 8, or 16 player tournaments</li>
+            </ul>
+        </div>
+
+        <div class="rules-buttons">
+            <button class="back-btn" onclick="goBackToWelcome()">Back</button>
+            <button onclick="showUsernameScreen()">Start Playing!</button>
+        </div>
+    </div>
+
+    <!-- Username Setup -->
+    <div id="username-screen" class="hidden">
+        <h2>Enter Your Username</h2>
+        <p>Choose a name to display to other players</p>
+        <input type="text" id="username-input" placeholder="Enter username (2-15 characters)" maxlength="15">
+        <p id="username-error" class="error-text"></p>
+        <button onclick="setUsername()">Start Playing</button>
+        <button class="back-btn" onclick="goBackToWelcome()">Back</button>
+    </div>
+
+    <!-- Game Mode Selection -->
+    <div id="game-mode-screen" class="hidden">
+        <h2>Select Game Mode</h2>
+        <button onclick="selectGameMode('ai')">Player vs. AI</button>
+        <button onclick="selectGameMode('online')">Play 1 vs. 1</button>
+        <button onclick="selectGameMode('tournament')">Tournament</button>
+        <button class="back-btn" onclick="showUsernameScreen()">Back</button>
+    </div>
+
+    <!-- AI Difficulty Selection -->
+    <div id="difficulty-screen" class="hidden">
+        <h2>Select AI Difficulty</h2>
+        <button onclick="selectDifficulty('easy')">Easy</button>
+        <button onclick="selectDifficulty('medium')">Medium</button>
+        <button onclick="selectDifficulty('hard')">Hard</button>
+        <button class="back-btn" onclick="goBackToMain()">Back</button>
+    </div>
+
+    <!-- 1v1 Online Room -->
+    <div id="room-screen" class="hidden">
+        <h2>Online Multiplayer</h2>
+        
+        <button onclick="createRoom()">Create Room</button>
+        <p id="room-id-display" class="room-text"></p>
+        
+        <hr class="divider">
+        
+        <p>Or join an existing room:</p>
+        <input type="text" id="room-id-input" placeholder="Enter Room ID" maxlength="5">
+        <button onclick="joinRoom()">Join Room</button>
+        <p id="room-error-msg" class="error-text"></p>
+        
+        <button class="back-btn" onclick="goBackToMain()">Back</button>
+    </div>
+
+    <!-- Tournament Join Screen -->
+    <div id="tournament-join-screen" class="hidden">
+        <h2>Tournament</h2>
+        
+        <p>Create a new tournament lobby:</p>
+        <div class="button-group">
+            <button onclick="createTournament(4)">4 Players</button>
+            <button onclick="createTournament(8)">8 Players</button>
+            <button onclick="createTournament(16)">16 Players</button>
+        </div>
+        
+        <hr class="divider">
+        
+        <p>Or join an existing tournament lobby:</p>
+        <input type="text" id="tournament-lobby-id-input" placeholder="Enter Lobby ID" maxlength="7">
+        <button onclick="joinTournament()">Join Lobby</button>
+        <p id="tournament-error-msg" class="error-text"></p>
+        
+        <button class="back-btn" onclick="goBackToMain()">Back</button>
+    </div>
+
+    <!-- Tournament Wait Screen -->
+    <div id="tournament-wait-screen" class="hidden">
+        <h2>Tournament Lobby</h2>
+        <p id="wait-lobby-id-display" class="room-text">Lobby ID: ...</p>
+        <p id="wait-lobby-status-text">Connecting...</p>
+        
+        <div class="player-list">
+            <h3>Players in Lobby:</h3>
+            <ul id="wait-lobby-players"></ul>
+        </div>
+        
+        <div class="loading-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+        <button id="leave-wait-lobby-btn" onclick="leaveTournamentLobby()">Leave Lobby</button>
+    </div>
+
+    <!-- Tournament Bracket Screen -->
+    <div id="tournament-bracket-screen" class="hidden">
+        <h2>Tournament Bracket</h2>
+        <div id="bracket-container">
+            <!-- Bracket will be generated here dynamically -->
+        </div>
+        <p id="tournament-status-text" class="room-text">Loading bracket...</p>
+        <button class="back-btn" onclick="goBackToMain()">Leave Tournament</button>
+    </div>
+
+    <!-- Toss Screen -->
+    <div id="toss-screen" class="hidden"> 
+        <h2>Let's Toss! 🎲</h2>
+        <div id="toss-selection" class="hidden">
+            <p>Choose Heads or Tails:</p>
+            <button onclick="handleToss('Heads')">Heads</button>
+            <button onclick="handleToss('Tails')">Tails</button>
+        </div>
+        <p id="toss-result"></p>
+        <div id="player-decision" class="hidden">
+            <p>What do you want to do?</p>
+            <button onclick="playerChoose('Bat')">Bat 🏏</button>
+            <button onclick="playerChoose('Bowl')">Bowl 🎯</button>
+        </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="hidden">
+        <div class="scoreboard">
+            <div id="player-score-box">
+                <h3>Your Score</h3>
+                <span id="player-score">0</span>
+                <span id="player-stats" class="stats">Wkts: 0 | Overs: 0.0</span>
+            </div>
+            <div id="opponent-score-box">
+                <h3 id="opponent-title">Opponent's Score</h3>
+                <span id="opponent-score">0</span>
+                <span id="opponent-stats" class="stats">Wkts: 0 | Overs: 0.0</span>
+            </div>
+        </div>
+        
+        <h2 id="target">Target: --</h2>
+        <h3 id="game-status"></h3>
+
+        <div class="game-area">
+            <div class="throw-display">
+                Your Throw:<br>
+                <span id="player-throw-display">?</span>
+            </div>
+            <div class="throw-display">
+                Opponent's Throw:<br>
+                <span id="opponent-throw-display">?</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <p>Choose your number (1-6):</p>
+            <button class="choice-btn" onclick="playTurn(1)">1</button>
+            <button class="choice-btn" onclick="playTurn(2)">2</button>
+            <button class="choice-btn" onclick="playTurn(3)">3</button>
+            <button class="choice-btn" onclick="playTurn(4)">4</button>
+            <button class="choice-btn" onclick="playTurn(5)">5</button>
+            <button class="choice-btn" onclick="playTurn(6)">6</button>
+        </div>
+
+        <button id="play-again-btn" class="hidden" onclick="resetGame()">Play Again?</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
