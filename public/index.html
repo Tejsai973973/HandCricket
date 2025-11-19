@@ -5,8 +5,50 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hand Cricket 🏏</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .connection-status.connected {
+            background-color: #00ff80;
+            color: #0a0a1a;
+        }
+
+        .connection-status.disconnected {
+            background-color: #ff3030;
+            color: white;
+            animation: pulse 2s infinite;
+        }
+
+        .default-win {
+            color: #ffd700;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            font-weight: bold;
+        }
+
+        .bracket-player.disconnected {
+            color: #ff3030;
+            text-decoration: line-through;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+    </style>
 </head>
 <body>
+
+    <!-- Connection Status Indicator -->
+    <div id="connection-status" class="connection-status hidden"></div>
 
     <h1>Hand Cricket 🏏</h1>
 
@@ -58,6 +100,14 @@
                 <li><strong>Player vs AI:</strong> Play against computer with 3 difficulty levels</li>
                 <li><strong>1 vs 1 Online:</strong> Play with a friend using Room ID</li>
                 <li><strong>Tournament:</strong> Compete in 4, 8, or 16 player tournaments</li>
+            </ul>
+
+            <h3>🔄 Disconnection Handling:</h3>
+            <ul>
+                <li>If opponent disconnects, you win automatically</li>
+                <li>If both players disconnect, random winner is selected</li>
+                <li>Tournament continues smoothly despite disconnections</li>
+                <li>Reconnect within 10 seconds to resume your match</li>
             </ul>
         </div>
 

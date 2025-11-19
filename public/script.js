@@ -37,6 +37,7 @@ const playerThrowEl = document.getElementById('player-throw-display');
 const opponentThrowEl = document.getElementById('opponent-throw-display');
 const playAgainBtn = document.getElementById('play-again-btn');
 const choiceButtons = document.querySelectorAll('.choice-btn');
+const connectionStatusEl = document.getElementById('connection-status');
 
 // --- Game Constants ---
 const MAX_WICKETS = 10;
@@ -48,6 +49,8 @@ let gameMode = 'ai';
 let isPlayerBatting = true;
 let isGameOver = false;
 let currentOpponentName = '';
+let connectionStatus = 'connected';
+let tournamentPollInterval = null;
 
 // --- AI-Only Variables ---
 let aiDifficulty = 'easy';
@@ -63,6 +66,39 @@ let playerBowlHistory = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
 // Debug logging
 function debugLog(message, data = null) {
     console.log(`[CLIENT] ${message}`, data || '');
+}
+
+// Connection status management
+function updateConnectionStatus(status) {
+    connectionStatus = status;
+    connectionStatusEl.textContent = status === 'connected' ? '🟢 Connected' : '🔴 Disconnected';
+    connectionStatusEl.className = `connection-status ${status}`;
+    
+    if (status === 'disconnected') {
+        connectionStatusEl.classList.remove('hidden');
+    } else {
+        setTimeout(() => {
+            connectionStatusEl.classList.add('hidden');
+        }, 3000);
+    }
+}
+
+// Tournament polling
+function startTournamentPolling() {
+    tournamentPollInterval = setInterval(() => {
+        if (gameMode === 'tournament' && !isGameOver) {
+            debugLog('Tournament polling - forcing bracket refresh');
+            // Force bracket refresh
+            socket.emit('requestBracketUpdate');
+        }
+    }, 3000); // 3 seconds for faster updates
+}
+
+function stopTournamentPolling() {
+    if (tournamentPollInterval) {
+        clearInterval(tournamentPollInterval);
+        tournamentPollInterval = null;
+    }
 }
 
 // --- Screen Management Functions ---
@@ -128,13 +164,16 @@ socket.on('usernameSet', (data) => {
 function selectGameMode(mode) {
     gameMode = mode;
     if (mode === 'ai') {
+        stopTournamentPolling();
         showScreen('difficulty-screen');
     } else if (mode === 'online') {
+        stopTournamentPolling();
         showScreen('room-screen');
         roomErrorMsg.innerText = '';
         roomIdDisplay.innerText = '';
         roomIdInput.value = '';
     } else if (mode === 'tournament') {
+        startTournamentPolling();
         showScreen('tournament-join-screen');
         tournamentErrorMsg.innerText = '';
         tournamentLobbyIdInput.value = '';
@@ -160,12 +199,14 @@ function joinTournament() {
 }
 
 function leaveTournamentLobby() {
+    stopTournamentPolling();
     debugLog('Leaving tournament lobby');
     socket.emit('leaveTournamentLobby');
     showScreen('game-mode-screen');
 }
 
 function goBackToMain() {
+    stopTournamentPolling();
     showScreen('game-mode-screen');
 }
 
@@ -471,6 +512,7 @@ socket.on('inningsEnd', (data) => {
     toggleChoiceButtons(false);
 });
 
+// Enhanced game over handler for disconnection wins
 socket.on('gameOver', (data) => {
     debugLog('Game over received', data);
     isGameOver = true;
@@ -478,7 +520,20 @@ socket.on('gameOver', (data) => {
     playerScoreEl.innerText = data.yourScore;
     opponentScoreEl.innerText = data.opponentScore;
     
-    if (data.message.includes("YOU WIN")) {
+    if (data.defaultWin) {
+        gameStatusEl.innerText = `🏆 ${data.message} 🏆`;
+        gameStatusEl.className = 'default-win';
+        
+        // For tournament default wins, advance immediately
+        if (gameMode === 'tournament') {
+            gameStatusEl.innerText += "\nAdvancing to next round...";
+            setTimeout(() => {
+                showScreen('tournament-bracket-screen');
+                socket.emit('requestBracketUpdate'); // Force bracket update
+            }, 1500);
+            return; // Don't show play again button for tournaments
+        }
+    } else if (data.message.includes("YOU WIN")) {
         gameStatusEl.innerText = `🎉 ${data.message} 🎉`;
     } else {
         gameStatusEl.innerText = data.message;
@@ -486,26 +541,31 @@ socket.on('gameOver', (data) => {
     
     toggleChoiceButtons(true);
     
-    if (gameMode === 'tournament') {
+    if (gameMode === 'tournament' && !data.defaultWin) {
         gameStatusEl.innerText += "\nWaiting for other matches...";
         setTimeout(() => {
             showScreen('tournament-bracket-screen');
         }, 3000);
-    } else {
+    } else if (!data.defaultWin) {
         playAgainBtn.classList.remove('hidden');
     }
 });
 
+// Enhanced opponent disconnected handler
 socket.on('opponentDisconnected', () => {
-    debugLog('Opponent disconnected');
+    debugLog('Opponent disconnected - handling tournament advancement');
     isGameOver = true;
     gameStatusEl.innerText = `${currentOpponentName} disconnected. You win!`;
     toggleChoiceButtons(true);
 
     if (gameMode === 'tournament') {
+        gameStatusEl.innerText += "\nAdvancing to next round...";
+        // Show bracket immediately instead of waiting
         setTimeout(() => {
             showScreen('tournament-bracket-screen');
-        }, 3000);
+            // Force a bracket update
+            socket.emit('requestBracketUpdate');
+        }, 1500);
     } else {
         playAgainBtn.classList.remove('hidden');
     }
@@ -562,7 +622,7 @@ socket.on('tournamentError', (message) => {
     }
 });
 
-// --- Tournament Bracket Listeners ---
+// --- Enhanced Tournament Bracket Listeners ---
 socket.on('tournamentBracketUpdate', (bracketData) => {
     debugLog('Tournament bracket update', bracketData);
     gameMode = 'tournament';
@@ -580,8 +640,26 @@ socket.on('tournamentBracketUpdate', (bracketData) => {
                         playerStatus = 'eliminated';
                     }
                 } else {
-                    shouldBeInGame = true;
-                    playerStatus = 'playing';
+                    // Check if this match should be active
+                    const isPlayerDisconnected = (match.p1 === socket.id && match.p1Disconnected) || 
+                                               (match.p2 === socket.id && match.p2Disconnected);
+                    const opponentDisconnected = (match.p1 === socket.id && match.p2Disconnected) || 
+                                               (match.p2 === socket.id && match.p1Disconnected);
+                    
+                    if (!isPlayerDisconnected && !opponentDisconnected) {
+                        shouldBeInGame = true;
+                        playerStatus = 'playing';
+                    } else if (opponentDisconnected && !isPlayerDisconnected) {
+                        // Opponent disconnected, you should advance automatically
+                        playerStatus = 'advancing';
+                    } else if (isPlayerDisconnected && opponentDisconnected) {
+                        // Both disconnected - check if resolved
+                        if (match.winner) {
+                            playerStatus = match.winner === socket.id ? 'advancing' : 'eliminated';
+                        } else {
+                            playerStatus = 'waiting';
+                        }
+                    }
                 }
             }
         });
@@ -602,7 +680,7 @@ socket.on('tournamentWinner', (data) => {
     tournamentStatusText.className = 'champion';
 });
 
-// --- Bracket Rendering Function ---
+// --- Enhanced Bracket Rendering Function ---
 function renderBracket(bracketData, playerStatus = 'waiting') {
     bracketContainer.innerHTML = '';
     
@@ -640,11 +718,13 @@ function renderBracket(bracketData, playerStatus = 'waiting') {
             let p1Class = 'bracket-player';
             if (match.winner === match.p1) p1Class += ' winner';
             if (isPlayerP1) p1Class += ' current-player';
+            if (match.p1Disconnected) p1Class += ' disconnected';
             let p1Name = isPlayerP1 ? playerUsername : match.p1Name;
             
             let p2Class = 'bracket-player';
             if (match.winner === match.p2) p2Class += ' winner';
             if (isPlayerP2) p2Class += ' current-player';
+            if (match.p2Disconnected) p2Class += ' disconnected';
             let p2Name = isPlayerP2 ? playerUsername : match.p2Name;
             
             matchEl.innerHTML = `
@@ -660,6 +740,19 @@ function renderBracket(bracketData, playerStatus = 'waiting') {
                 const winnerName = match.winner === socket.id ? playerUsername : match.winnerName;
                 statusEl.innerText = `Winner: ${winnerName}`;
                 matchEl.appendChild(statusEl);
+            } else if (match.p1Disconnected || match.p2Disconnected) {
+                const statusEl = document.createElement('div');
+                statusEl.style.fontSize = '0.7rem';
+                statusEl.style.color = '#ff3030';
+                
+                if (match.p1Disconnected && match.p2Disconnected) {
+                    statusEl.innerText = 'Both players disconnected - resolving...';
+                } else if (match.p1Disconnected) {
+                    statusEl.innerText = `${p1Name} disconnected - ${p2Name} advances`;
+                } else if (match.p2Disconnected) {
+                    statusEl.innerText = `${p2Name} disconnected - ${p1Name} advances`;
+                }
+                matchEl.appendChild(statusEl);
             }
             
             roundEl.appendChild(matchEl);
@@ -667,6 +760,47 @@ function renderBracket(bracketData, playerStatus = 'waiting') {
         bracketContainer.appendChild(roundEl);
     });
 }
+
+// --- Connection Status Listeners ---
+socket.on('connect', () => {
+    updateConnectionStatus('connected');
+    console.log('Connected to server');
+    
+    // Try to rejoin any active tournament
+    if (gameMode === 'tournament' && playerUsername) {
+        socket.emit('setUsername', playerUsername);
+    }
+});
+
+socket.on('disconnect', () => {
+    updateConnectionStatus('disconnected');
+    console.log('Disconnected from server');
+});
+
+socket.on('reconnect', () => {
+    updateConnectionStatus('connected');
+    console.log('Reconnected to server');
+    
+    // Try to rejoin any active tournament
+    if (gameMode === 'tournament' && playerUsername) {
+        socket.emit('setUsername', playerUsername);
+    }
+});
+
+socket.on('connectionStatus', (data) => {
+    updateConnectionStatus(data.status);
+});
+
+// Add periodic ping to monitor connection
+setInterval(() => {
+    if (socket.connected) {
+        socket.emit('ping');
+    }
+}, 30000);
+
+socket.on('pong', (data) => {
+    debugLog('Pong received', data);
+});
 
 // --- Utility Functions ---
 function formatOvers(balls) {
@@ -717,10 +851,6 @@ window.addEventListener('error', (event) => {
 
 socket.on('connect_error', (error) => {
     console.error('Socket connection error:', error);
-});
-
-socket.on('disconnect', (reason) => {
-    console.log('Socket disconnected:', reason);
 });
 
 // Initialize the game

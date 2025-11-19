@@ -7,13 +7,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// Serve static files from public directory
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Add this route to handle all requests and serve index.html
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.use(express.static('public'));
 
 const MAX_WICKETS = 10;
 const MAX_BALLS = 30;
@@ -23,11 +17,8 @@ let games = {};
 let tournamentLobbies = {};
 let activeTournaments = {};
 
-// Use environment variable for port, fallback to 3000 for local development
-const PORT = process.env.PORT || 3000;
-
-// Debug logging - disable in production
-const DEBUG = process.env.NODE_ENV !== 'production';
+// Debug logging
+const DEBUG = true;
 function debugLog(message, data = null) {
     if (DEBUG) {
         console.log(`[DEBUG] ${message}`, data || '');
@@ -308,9 +299,36 @@ class Game {
             debugLog('Game cleaned up', { gameId: this.gameId });
         }, 100);
     }
+
+    // Handle opponent disconnect immediately
+    handleOpponentDisconnect(disconnectedSocket) {
+        debugLog('Handling opponent disconnect in game', {
+            gameId: this.gameId,
+            disconnected: disconnectedSocket.username || disconnectedSocket.id
+        });
+        
+        const opponent = (disconnectedSocket.id === this.p1.id) ? this.p2 : this.p1;
+        
+        if (validateSocket(opponent)) {
+            // Notify the opponent immediately
+            opponent.emit('opponentDisconnected');
+            
+            // If this is a tournament game, report the result immediately
+            if (this.tournament) {
+                debugLog('Reporting tournament win due to disconnection', {
+                    winner: opponent.username || opponent.id,
+                    tournament: this.tournament.lobbyId
+                });
+                this.tournament.reportWinner(opponent, disconnectedSocket);
+            }
+        }
+        
+        // Clean up the game
+        delete games[this.gameId];
+    }
 }
 
-// --- Tournament Class ---
+// --- Enhanced Tournament Class with Disconnection Handling ---
 class Tournament {
     constructor(lobbyId, players) {
         this.lobbyId = lobbyId;
@@ -320,6 +338,8 @@ class Tournament {
         this.bracket = [];
         this.winners = [];
         this.activeGames = new Set();
+        this.disconnectedPlayers = new Set();
+        this.disconnectionTimers = new Map();
         
         debugLog('Tournament created', { 
             lobbyId: lobbyId, 
@@ -385,9 +405,235 @@ class Tournament {
         }, 1000);
     }
     
+    // Enhanced disconnection handling
+    handlePlayerDisconnect(socket) {
+        if (!validateSocket(socket)) return;
+        
+        debugLog('Player disconnected from tournament', { 
+            lobbyId: this.lobbyId, 
+            player: socket.username || socket.id 
+        });
+        
+        this.disconnectedPlayers.add(socket.id);
+        
+        // Find and handle any active games with this player immediately
+        for (const gameId of this.activeGames) {
+            const game = games[gameId];
+            if (game && (game.p1.id === socket.id || game.p2.id === socket.id)) {
+                debugLog('Immediately handling tournament game disconnection', {
+                    gameId: gameId,
+                    player: socket.username || socket.id
+                });
+                this.handleGameDisconnection(game, socket);
+                break;
+            }
+        }
+        
+        // Check if this affects future matches
+        this.checkDisconnectedPlayerMatches(socket);
+        
+        // Force immediate bracket update
+        this.broadcastBracket();
+    }
+    
+    handleGameDisconnection(game, disconnectedSocket) {
+        const opponent = (disconnectedSocket.id === game.p1.id) ? game.p2 : game.p1;
+        
+        debugLog('Tournament game disconnection handled', {
+            gameId: game.gameId,
+            disconnected: disconnectedSocket.username || disconnectedSocket.id,
+            opponent: opponent ? (opponent.username || opponent.id) : 'none'
+        });
+        
+        if (validateSocket(opponent)) {
+            // Opponent is still connected - they win automatically
+            debugLog('Awarding tournament win to connected opponent', { 
+                winner: opponent.username || opponent.id,
+                disconnected: disconnectedSocket.username || disconnectedSocket.id
+            });
+            
+            // Notify the opponent immediately
+            opponent.emit('gameOver', { 
+                message: "Opponent disconnected. You win by default!",
+                winnerName: "YOU",
+                yourScore: 0,
+                opponentScore: 0,
+                yourWickets: 0,
+                opponentWickets: 0,
+                defaultWin: true
+            });
+            
+            // Report the winner to the tournament
+            this.reportWinner(opponent, disconnectedSocket);
+            
+            // Force immediate bracket update
+            setTimeout(() => {
+                this.broadcastBracket();
+            }, 100);
+        } else {
+            // Both players disconnected - handle special case
+            debugLog('Both players disconnected from tournament match', { 
+                gameId: game.gameId,
+                p1: game.p1.username || game.p1.id,
+                p2: game.p2.username || game.p2.id
+            });
+            
+            this.handleBothPlayersDisconnected(game);
+        }
+        
+        // Clean up the game
+        if (game.gameId) {
+            this.activeGames.delete(game.gameId);
+            delete games[game.gameId];
+        }
+    }
+    
+    handleBothPlayersDisconnected(game) {
+        // Set a timer to see if either player reconnects
+        const matchId = this.findMatchIdByGame(game);
+        if (!matchId) return;
+        
+        const timerId = setTimeout(() => {
+            this.resolveDoubleDisconnection(game, matchId);
+        }, 10000); // 10 second grace period
+        
+        this.disconnectionTimers.set(game.gameId, timerId);
+        
+        this.broadcastBracket();
+    }
+    
+    resolveDoubleDisconnection(game, matchId) {
+        debugLog('Resolving double disconnection', { 
+            gameId: game.gameId,
+            matchId: matchId
+        });
+        
+        // Remove the timer
+        if (this.disconnectionTimers.has(game.gameId)) {
+            clearTimeout(this.disconnectionTimers.get(game.gameId));
+            this.disconnectionTimers.delete(game.gameId);
+        }
+        
+        // Check if players reconnected
+        const p1Reconnected = !this.disconnectedPlayers.has(game.p1.id);
+        const p2Reconnected = !this.disconnectedPlayers.has(game.p2.id);
+        
+        let winner = null;
+        
+        if (p1Reconnected && !p2Reconnected) {
+            winner = game.p1;
+        } else if (p2Reconnected && !p1Reconnected) {
+            winner = game.p2;
+        } else if (p1Reconnected && p2Reconnected) {
+            // Both reconnected - random selection
+            winner = Math.random() < 0.5 ? game.p1 : game.p2;
+            debugLog('Both players reconnected, random winner selected', { 
+                winner: winner.username || winner.id 
+            });
+        } else {
+            // Neither reconnected - random selection but force bracket update
+            winner = Math.random() < 0.5 ? game.p1 : game.p2;
+            debugLog('Both players disconnected, random winner selected', { 
+                winner: winner.username || winner.id 
+            });
+        }
+        
+        if (winner) {
+            const loser = (winner.id === game.p1.id) ? game.p2 : game.p1;
+            this.reportWinner(winner, loser);
+            
+            // Force immediate bracket broadcast
+            setTimeout(() => {
+                this.broadcastBracket();
+            }, 100);
+        }
+        
+        // Clean up
+        if (game.gameId) {
+            this.activeGames.delete(game.gameId);
+            delete games[game.gameId];
+        }
+    }
+    
+    findMatchIdByGame(game) {
+        for (let roundIndex = 0; roundIndex < this.bracket.length; roundIndex++) {
+            const round = this.bracket[roundIndex];
+            for (let matchIndex = 0; matchIndex < round.length; matchIndex++) {
+                const match = round[matchIndex];
+                if (match.gameId === game.gameId) {
+                    return `R${roundIndex + 1}-M${matchIndex}`;
+                }
+            }
+        }
+        return null;
+    }
+    
+    checkDisconnectedPlayerMatches(disconnectedSocket) {
+        // Check future matches and give bye to opponents
+        for (let roundIndex = this.round; roundIndex < this.bracket.length; roundIndex++) {
+            const round = this.bracket[roundIndex];
+            for (const match of round) {
+                if ((match.p1 && match.p1.id === disconnectedSocket.id) || 
+                    (match.p2 && match.p2.id === disconnectedSocket.id)) {
+                    this.handleFutureMatchDisconnection(match, disconnectedSocket);
+                }
+            }
+        }
+    }
+    
+    handleFutureMatchDisconnection(match, disconnectedSocket) {
+        const opponent = (match.p1.id === disconnectedSocket.id) ? match.p2 : match.p1;
+        
+        if (opponent && validateSocket(opponent)) {
+            // Opponent gets a bye to next round
+            debugLog('Giving bye to opponent due to future match disconnection', { 
+                opponent: opponent.username || opponent.id
+            });
+            
+            match.winner = opponent;
+            match.gameId = "BYE-DISCONNECT";
+            
+            this.broadcastBracket();
+            this.checkRoundCompletion();
+        }
+    }
+    
+    handlePlayerReconnect(socket) {
+        if (!validateSocket(socket)) return;
+        
+        debugLog('Player reconnected to tournament', { 
+            lobbyId: this.lobbyId, 
+            player: socket.username || socket.id 
+        });
+        
+        this.disconnectedPlayers.delete(socket.id);
+        
+        // Cancel any disconnection timers for this player
+        for (const [gameId, timerId] of this.disconnectionTimers.entries()) {
+            const game = games[gameId];
+            if (game && (game.p1.id === socket.id || game.p2.id === socket.id)) {
+                clearTimeout(timerId);
+                this.disconnectionTimers.delete(gameId);
+                
+                const opponent = (socket.id === game.p1.id) ? game.p2 : game.p1;
+                if (validateSocket(opponent)) {
+                    // Resume game
+                    game.p1.emit('statusUpdate', 'Game resumed!');
+                    game.p2.emit('statusUpdate', 'Game resumed!');
+                } else {
+                    // This player wins since opponent is still disconnected
+                    this.reportWinner(socket, opponent);
+                }
+                break;
+            }
+        }
+        
+        this.broadcastBracket();
+    }
+    
     reportWinner(winnerSocket, loserSocket) {
         if (!validateSocket(winnerSocket)) {
-            debugLog('Invalid winner socket');
+            debugLog('Invalid winner socket in reportWinner');
             return;
         }
 
@@ -420,6 +666,11 @@ class Tournament {
         this.broadcastBracket();
 
         // Check if all matches in current round are complete
+        this.checkRoundCompletion();
+    }
+
+    checkRoundCompletion() {
+        const currentRoundMatches = this.bracket[this.round - 1];
         const allMatchesComplete = currentRoundMatches.every(match => match.winner !== null);
         const noActiveGames = this.activeGames.size === 0;
         
@@ -492,6 +743,9 @@ class Tournament {
     getBracketData() {
         return this.bracket.map(round => {
             return round.map(match => {
+                const p1Disconnected = this.disconnectedPlayers.has(match.p1.id);
+                const p2Disconnected = this.disconnectedPlayers.has(match.p2.id);
+                
                 return {
                     p1: match.p1.id,
                     p2: match.p2.id,
@@ -499,7 +753,9 @@ class Tournament {
                     p2Name: match.p2.username || `Player ${match.p2.id.substring(0, 5)}`,
                     winner: match.winner ? match.winner.id : null,
                     winnerName: match.winner ? (match.winner.username || `Player ${match.winner.id.substring(0, 5)}`) : null,
-                    gameId: match.gameId
+                    gameId: match.gameId,
+                    p1Disconnected: p1Disconnected,
+                    p2Disconnected: p2Disconnected
                 };
             });
         });
@@ -541,12 +797,23 @@ io.on('connection', (socket) => {
     socket.currentLobbyId = null;
     socket.username = null;
 
+    // Update connection status
+    socket.emit('connectionStatus', { status: 'connected' });
+
     // --- Username Setup ---
     socket.on('setUsername', (username) => {
         if (username && username.trim().length > 0) {
             socket.username = username.trim().substring(0, 15);
             console.log(`User ${socket.id} set username to: ${socket.username}`);
             socket.emit('usernameSet', { success: true, username: socket.username });
+            
+            // Handle reconnection to tournament if applicable
+            for (const lobbyId in activeTournaments) {
+                const tournament = activeTournaments[lobbyId];
+                if (tournament.disconnectedPlayers.has(socket.id)) {
+                    tournament.handlePlayerReconnect(socket);
+                }
+            }
         } else {
             socket.emit('usernameSet', { success: false, error: 'Invalid username' });
         }
@@ -682,11 +949,55 @@ io.on('connection', (socket) => {
             socket.emit('errorMsg', 'Game not found. Please restart.');
         }
     });
+
+    // Handle bracket update requests
+    socket.on('requestBracketUpdate', () => {
+        const lobbyId = socket.currentLobbyId;
+        if (lobbyId && activeTournaments[lobbyId]) {
+            debugLog('Forcing bracket update for tournament', { lobbyId });
+            activeTournaments[lobbyId].broadcastBracket();
+        }
+    });
     
     // --- Disconnect Logic ---
-    socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.username || socket.id);
+    socket.on('disconnect', (reason) => {
+        console.log('User disconnected:', socket.username || socket.id, 'Reason:', reason);
         
+        // Tournament Disconnection Handling - IMMEDIATE FIX
+        for (const lobbyId in activeTournaments) {
+            const tournament = activeTournaments[lobbyId];
+            
+            // Check if this socket is in any active game in the tournament
+            for (const gameId of tournament.activeGames) {
+                const game = games[gameId];
+                if (game && (game.p1.id === socket.id || game.p2.id === socket.id)) {
+                    debugLog('Player disconnected from tournament game - immediate handling', {
+                        player: socket.username || socket.id,
+                        gameId: gameId,
+                        tournament: lobbyId
+                    });
+                    
+                    // Handle the game disconnection immediately using the game's method
+                    game.handleOpponentDisconnect(socket);
+                    break;
+                }
+            }
+            
+            // Also check if this socket is in the tournament bracket
+            let isInTournament = false;
+            for (const round of tournament.bracket) {
+                for (const match of round) {
+                    if ((match.p1 && match.p1.id === socket.id) || 
+                        (match.p2 && match.p2.id === socket.id)) {
+                        isInTournament = true;
+                        tournament.handlePlayerDisconnect(socket);
+                        break;
+                    }
+                }
+                if (isInTournament) break;
+            }
+        }
+
         // 1v1 Room Disconnect
         for (const roomId in rooms) {
             if (rooms[roomId].id === socket.id) {
@@ -717,22 +1028,6 @@ io.on('connection', (socket) => {
             }
         }
 
-        // Active Tournament Game Disconnect
-        for (const lobbyId in activeTournaments) {
-            const tournament = activeTournaments[lobbyId];
-            for (const gameId of tournament.activeGames) {
-                const game = games[gameId];
-                if (game && (game.p1.id === socket.id || game.p2.id === socket.id)) {
-                    const opponent = (socket.id === game.p1.id) ? game.p2 : game.p1;
-                    if (validateSocket(opponent)) {
-                        opponent.emit('opponentDisconnected');
-                        tournament.reportWinner(opponent, socket);
-                    }
-                    break;
-                }
-            }
-        }
-
         // Active Game Disconnect (non-tournament)
         const game = games[socket.gameId];
         if (game && !game.tournament) {
@@ -742,6 +1037,11 @@ io.on('connection', (socket) => {
             }
             delete games[socket.gameId];
         }
+    });
+    
+    // Add heartbeat for connection monitoring
+    socket.on('ping', () => {
+        socket.emit('pong', { timestamp: Date.now() });
     });
 });
 
